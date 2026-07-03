@@ -212,6 +212,11 @@
   .countdown .cd-box .v{ font-family:'Fraunces',serif; font-size:20px; font-weight:700; line-height:1; }
   .countdown .cd-box .l{ font-size:9px; text-transform:uppercase; letter-spacing:0.08em; opacity:0.75; margin-top:3px; }
 
+  .reconnect-card{ background:#fff; border:1px solid var(--line); border-radius:12px; padding:18px; margin:18px 0; text-align:center; }
+  .reconnect-avatar{ width:56px; height:56px; border-radius:50%; object-fit:cover; background:var(--cream-2); margin:0 auto 10px; display:block; }
+  .reconnect-name{ font-family:'Fraunces', serif; font-size:17px; margin-bottom:12px; color:var(--green); }
+  .reconnect-sep{ font-size:11px; color:rgba(28,20,16,0.45); margin-top:12px; }
+
   .sort-toggle{ display:flex; gap:6px; margin-bottom:14px; }
   .sort-toggle button{ border:1px solid var(--line); background:#fff; padding:7px 13px; border-radius:20px; font-size:12px; color:rgba(28,20,16,0.6); }
   .sort-toggle button.active{ background:var(--green); color:var(--cream); border-color:var(--green); }
@@ -264,6 +269,14 @@
       <div class="sub">Entre le code que Luc t'a transmis pour rejoindre la fête</div>
 
       <div class="countdown" id="countdown"></div>
+
+      <div class="reconnect-card hidden" id="reconnect-card">
+        <img id="reconnect-avatar" class="reconnect-avatar">
+        <div class="reconnect-name" id="reconnect-name"></div>
+        <button class="btn gold" id="reconnect-btn">Me reconnecter</button>
+        <div class="err" id="reconnect-err"></div>
+        <div class="reconnect-sep">— ou entre un nouveau code ci-dessous —</div>
+      </div>
 
       <div class="field">
         <label for="code-input">Code d'accès</label>
@@ -330,6 +343,7 @@
       <div class="sub" id="topbar-sub">—</div>
     </div>
     <div class="spacer"></div>
+    <button class="link-btn" id="logout-btn" style="color:var(--cream); font-size:11px; text-decoration:underline;">Déconnexion</button>
     <div class="me" id="me-avatar"></div>
   </header>
 
@@ -485,12 +499,12 @@ const EVENT_DATE = new Date('2026-09-12T18:00:00'); // à ajuster à la vraie da
    et vue instantanément par tout le monde.
    ========================================================= */
 const firebaseConfig = {
-  apiKey: "AIzaSyDDpdEj4_i4OT-r_yfxvbs1O2HZ6cY7ObQ",
-  authDomain: "luc-70-ans.firebaseapp.com",
-  projectId: "luc-70-ans",
-  storageBucket: "luc-70-ans.firebasestorage.app",
-  messagingSenderId: "455069362187",
-  appId: "1:455069362187:web:bb4a0dd9c56598f4267f0e"
+  apiKey: "COLLE_TA_CLE_API_ICI",
+  authDomain: "TON-PROJET.firebaseapp.com",
+  projectId: "TON-PROJET",
+  storageBucket: "TON-PROJET.appspot.com",
+  messagingSenderId: "000000000000",
+  appId: "1:000000000000:web:xxxxxxxxxxxxxxxx"
 };
 firebase.initializeApp(firebaseConfig);
 const db = firebase.firestore();
@@ -629,6 +643,36 @@ function clearSession(){
   try{ localStorage.removeItem('luc70_guest_id'); }catch(e){}
 }
 
+/* =========================================================
+   RECONNEXION PAR IDENTITÉ (prénom + nom + téléphone)
+   ========================================================= */
+function normalizeName(n){ return (n||'').trim().toLowerCase().replace(/\s+/g,' '); }
+function normalizePhone(p){ return (p||'').replace(/[^\d+]/g,''); }
+
+async function findGuestByIdentity(first, last, phone){
+  try{
+    const snap = await db.collection('guests').get();
+    const nf = normalizeName(first), nl = normalizeName(last), np = normalizePhone(phone);
+    for(const doc of snap.docs){
+      const g = doc.data();
+      if(normalizeName(g.first)===nf && normalizeName(g.last||'')===nl && normalizePhone(g.phone)===np){
+        return { id: doc.id, ...g };
+      }
+    }
+    return null;
+  }catch(e){ console.error('findGuestByIdentity failed', e); return null; }
+}
+
+function logout(){
+  if(me && me.id !== 'admin'){ logConnection(me.id, 'deconnexion'); }
+  clearSession();
+  me = null;
+  isAdmin = false;
+  history.replaceState(null, '', location.pathname);
+  showScreen('gate');
+  toast('Tu es déconnecté(e).');
+}
+
 async function fetchMyIp(){
   try{
     const r = await fetch('https://api.ipify.org?format=json');
@@ -691,6 +735,7 @@ function startCountdown(){
 function showScreen(name){
   $('screen-gate').classList.toggle('hidden', name!=='gate');
   $('screen-register').classList.toggle('hidden', name!=='register');
+  $('screen-login').classList.toggle('hidden', name!=='login');
   $('screen-banned').classList.toggle('hidden', name!=='banned');
   $('screen-app').classList.toggle('active', name==='app');
 }
@@ -701,13 +746,19 @@ function showScreen(name){
 let pendingCode = null;
 let pendingIp = null;
 
+let gateSubmitting = false;
 $('gate-submit').addEventListener('click', async ()=>{
+  if(gateSubmitting) return;
   const codeRaw = $('code-input').value.trim().toUpperCase();
   $('gate-err').textContent = '';
   if(!codeRaw){ $('gate-err').textContent = 'Entre un code.'; return; }
+  gateSubmitting = true;
+  $('gate-submit').disabled = true;
   const myIp = await fetchMyIp();
   if(await isIpBanned(myIp)){ showScreen('banned'); return; }
   const codeData = await sGet('codes:'+codeRaw);
+  gateSubmitting = false;
+  $('gate-submit').disabled = false;
   if(!codeData){ $('gate-err').textContent = "Ce code n'existe pas."; return; }
   if(codeData.maxUses && codeData.uses >= codeData.maxUses){
     $('gate-err').textContent = "Ce code a atteint son nombre d'utilisations.";
@@ -721,6 +772,11 @@ $('gate-submit').addEventListener('click', async ()=>{
 $('open-admin').addEventListener('click', ()=>{
   $('admin-login').classList.add('active');
 });
+$('open-login').addEventListener('click', ()=>{
+  $('login-err').textContent = '';
+  showScreen('login');
+});
+$('login-back').addEventListener('click', ()=> showScreen('gate'));
 $('admin-cancel').addEventListener('click', ()=> $('admin-login').classList.remove('active'));
 $('admin-pass-submit').addEventListener('click', ()=>{
   if($('admin-pass').value === ADMIN_PASSWORD){
@@ -755,12 +811,18 @@ $('avatar-input').addEventListener('change', async (e)=>{
   $('avatar-placeholder').classList.add('hidden');
 });
 
+let regSubmitting = false;
 $('reg-submit').addEventListener('click', async ()=>{
+  if(regSubmitting) return;
   const first = $('reg-first').value.trim();
   const last = $('reg-last').value.trim();
   const phone = $('reg-phone').value.trim();
   $('reg-err').textContent = '';
   if(!first || !phone){ $('reg-err').textContent = 'Prénom et numéro sont requis.'; return; }
+
+  regSubmitting = true;
+  $('reg-submit').disabled = true;
+  $('reg-submit').textContent = 'Inscription…';
 
   const id = genId();
   me = { id, first, last, phone, avatar: avatarDataUrl, joinedAt: Date.now(), lastSeen: Date.now(), code: pendingCode, ip: pendingIp || null, banned: false };
@@ -779,6 +841,42 @@ $('reg-submit').addEventListener('click', async ()=>{
   saveSession(id);
   history.replaceState(null, '', location.pathname);
   showApp();
+});
+
+let loginSubmitting = false;
+$('login-submit').addEventListener('click', async ()=>{
+  if(loginSubmitting) return;
+  const first = $('login-first').value.trim();
+  const last = $('login-last').value.trim();
+  const phone = $('login-phone').value.trim();
+  $('login-err').textContent = '';
+  if(!first || !phone){ $('login-err').textContent = 'Prénom et numéro sont requis.'; return; }
+
+  loginSubmitting = true;
+  $('login-submit').disabled = true;
+  $('login-submit').textContent = 'Recherche…';
+
+  const found = await findGuestByIdentity(first, last, phone);
+
+  loginSubmitting = false;
+  $('login-submit').disabled = false;
+  $('login-submit').textContent = 'Me reconnecter';
+
+  if(!found){
+    $('login-err').textContent = "Aucun compte ne correspond à ces informations.";
+    return;
+  }
+  if(found.banned){ showScreen('banned'); return; }
+
+  me = found;
+  saveSession(me.id);
+  await logConnection(me.id, 'reconnexion');
+  history.replaceState(null, '', location.pathname);
+  showApp();
+});
+
+$('logout-btn').addEventListener('click', ()=>{
+  if(confirm('Te déconnecter de ton compte ?')) logout();
 });
 
 /* =========================================================
@@ -1028,7 +1126,7 @@ async function loadPresence(){
   logEl.innerHTML = [...logIdx].reverse().slice(0,40).map(entry=>{
     const g = guestMap[entry.guestId];
     const nm = g ? (g.first + ' ' + (g.last||'')) : 'Invité';
-    const verb = entry.type === 'connexion' ? 's\'est inscrit(e)' : 's\'est reconnecté(e)';
+    const verb = entry.type === 'connexion' ? 's\'est inscrit(e)' : entry.type === 'deconnexion' ? 's\'est déconnecté(e)' : 's\'est reconnecté(e)';
     return `<div class="log-entry"><b>${escapeHtml(nm)}</b> ${verb} — ${fmtTime(entry.ts)}</div>`;
   }).join('') || '<div class="muted">Aucune activité pour l\'instant.</div>';
 }
@@ -1036,7 +1134,11 @@ async function loadPresence(){
 /* =========================================================
    ADMIN
    ========================================================= */
+let genCodeSubmitting = false;
 $('gen-code-btn').addEventListener('click', async ()=>{
+  if(genCodeSubmitting) return;
+  genCodeSubmitting = true;
+  $('gen-code-btn').disabled = true;
   const usesRaw = $('code-uses').value.trim();
   const maxUses = usesRaw ? parseInt(usesRaw,10) : 0;
   const code = genCode();
@@ -1045,6 +1147,8 @@ $('gen-code-btn').addEventListener('click', async ()=>{
   idx.push(code);
   await sSet('idx:codes', idx);
   $('code-uses').value = '';
+  genCodeSubmitting = false;
+  $('gen-code-btn').disabled = false;
   toast('Code généré : ' + code);
   loadAdmin();
 });
@@ -1085,6 +1189,7 @@ async function loadAdmin(){
       <div class="actions">
         <button class="btn tiny ${g.banned?'gold':'rust'}" onclick="toggleBan('${id}')">${g.banned ? 'Débannir' : 'Bannir'}</button>
         ${g.ip ? `<button class="btn tiny ghost" onclick="banIp('${g.ip}')">Bannir l'IP</button>` : ''}
+        <button class="btn tiny ghost" onclick="deleteGuest('${id}')">Supprimer</button>
       </div>
     </div>`);
   }
@@ -1097,6 +1202,13 @@ async function toggleBan(guestId){
   g.banned = !g.banned;
   await sSet('guests:'+guestId, g);
   toast(g.banned ? 'Invité banni.' : 'Invité débanni.');
+  loadAdmin();
+}
+
+async function deleteGuest(guestId){
+  if(!confirm('Supprimer définitivement ce profil invité ?')) return;
+  await sDel('guests:'+guestId);
+  toast('Invité supprimé.');
   loadAdmin();
 }
 
