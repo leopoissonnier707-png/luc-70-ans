@@ -627,49 +627,48 @@ const $ = id => document.getElementById(id);
 
 /* =========================================================
    SESSION PERSISTENCE
-   Remarque : ce site utilise localStorage pour que chaque invité
-   reste connecté d'une visite à l'autre sans retaper le code.
-   Cela ne fonctionne pas dans l'aperçu intégré au chat Claude,
-   mais fonctionne normalement une fois le site hébergé en ligne
-   (Netlify, GitHub Pages, etc.), ce qui est l'usage prévu ici.
+   Remarque : ce site utilise localStorage pour reconnaître
+   l'appareil d'un invité. Cela ne fonctionne pas dans l'aperçu
+   intégré au chat Claude, mais fonctionne normalement une fois
+   le site hébergé en ligne (Netlify, Render, etc.), ce qui est
+   l'usage prévu ici.
+   - luc70_guest_id   : dernier compte connu sur cet appareil
+   - luc70_logged_out : présent si l'invité s'est déconnecté
+                        volontairement (on garde son identité en
+                        mémoire pour lui proposer une reconnexion
+                        rapide, mais on ne le reconnecte plus
+                        automatiquement)
    ========================================================= */
 function saveSession(guestId){
-  try{ localStorage.setItem('luc70_guest_id', guestId); }catch(e){}
+  try{
+    localStorage.setItem('luc70_guest_id', guestId);
+    localStorage.removeItem('luc70_logged_out');
+  }catch(e){}
 }
 function readSession(){
   try{ return localStorage.getItem('luc70_guest_id'); }catch(e){ return null; }
 }
-function clearSession(){
-  try{ localStorage.removeItem('luc70_guest_id'); }catch(e){}
+function isLoggedOut(){
+  try{ return localStorage.getItem('luc70_logged_out') === '1'; }catch(e){ return false; }
 }
-
-/* =========================================================
-   RECONNEXION PAR IDENTITÉ (prénom + nom + téléphone)
-   ========================================================= */
-function normalizeName(n){ return (n||'').trim().toLowerCase().replace(/\s+/g,' '); }
-function normalizePhone(p){ return (p||'').replace(/[^\d+]/g,''); }
-
-async function findGuestByIdentity(first, last, phone){
+function markLoggedOut(){
+  try{ localStorage.setItem('luc70_logged_out', '1'); }catch(e){}
+}
+function clearSession(){
   try{
-    const snap = await db.collection('guests').get();
-    const nf = normalizeName(first), nl = normalizeName(last), np = normalizePhone(phone);
-    for(const doc of snap.docs){
-      const g = doc.data();
-      if(normalizeName(g.first)===nf && normalizeName(g.last||'')===nl && normalizePhone(g.phone)===np){
-        return { id: doc.id, ...g };
-      }
-    }
-    return null;
-  }catch(e){ console.error('findGuestByIdentity failed', e); return null; }
+    localStorage.removeItem('luc70_guest_id');
+    localStorage.removeItem('luc70_logged_out');
+  }catch(e){}
 }
 
 function logout(){
   if(me && me.id !== 'admin'){ logConnection(me.id, 'deconnexion'); }
-  clearSession();
+  markLoggedOut();
   me = null;
   isAdmin = false;
   history.replaceState(null, '', location.pathname);
   showScreen('gate');
+  renderReconnectCard();
   toast('Tu es déconnecté(e).');
 }
 
@@ -686,6 +685,56 @@ async function isIpBanned(ip){
   return banned.includes(ip);
 }
 
+/* =========================================================
+   RECONNEXION PAR APPAREIL (vérification IP, gratuite)
+   L'IP enregistrée lors de la création du compte est recomparée
+   à l'IP actuelle. Si l'invité a changé de réseau (Wi-Fi/4G)
+   entre-temps, la vérification échoue et un message clair
+   l'explique — dans ce cas il peut créer un nouveau profil avec
+   un code d'invitation.
+   ========================================================= */
+async function renderReconnectCard(){
+  const card = $('reconnect-card');
+  const storedId = readSession();
+  if(!storedId || !isLoggedOut()){ card.classList.add('hidden'); return; }
+  const g = await sGet('guests:'+storedId);
+  if(!g || g.banned){ card.classList.add('hidden'); return; }
+  $('reconnect-avatar').src = g.avatar || '';
+  $('reconnect-name').textContent = g.first + (g.last ? ' '+g.last : '');
+  card.dataset.guestId = storedId;
+  card.classList.remove('hidden');
+}
+
+$('reconnect-btn').addEventListener('click', async ()=>{
+  const errEl = $('reconnect-err');
+  errEl.textContent = '';
+  const guestId = $('reconnect-card').dataset.guestId;
+  if(!guestId) return;
+
+  $('reconnect-btn').disabled = true;
+  $('reconnect-btn').textContent = 'Vérification…';
+
+  const g = await sGet('guests:'+guestId);
+  const myIp = await fetchMyIp();
+
+  $('reconnect-btn').disabled = false;
+  $('reconnect-btn').textContent = 'Me reconnecter';
+
+  if(!g){ errEl.textContent = "Ce compte n'existe plus."; return; }
+  if(g.banned){ showScreen('banned'); return; }
+
+  if(g.ip && myIp && g.ip !== myIp){
+    errEl.textContent = "Erreur de connexion : cet appareil/réseau ne correspond pas à celui utilisé pour créer ce compte. Si tu as changé de Wi-Fi ou de 4G depuis, utilise un nouveau code d'invitation ci-dessous pour créer un profil.";
+    return;
+  }
+
+  me = g;
+  saveSession(me.id);
+  history.replaceState(null, '', location.pathname);
+  await logConnection(me.id, 'reconnexion');
+  showApp();
+});
+
 (async function init(){
   startCountdown();
   const params = new URLSearchParams(location.search);
@@ -693,14 +742,12 @@ async function isIpBanned(ip){
   if(prefillCode) $('code-input').value = prefillCode.toUpperCase();
 
   const storedId = readSession();
-  const urlId = params.get('g');
-  const gid = storedId || urlId;
+  const loggedOut = isLoggedOut();
 
-  if(gid){
-    const guest = await sGet('guests:'+gid);
+  if(storedId && !loggedOut){
+    const guest = await sGet('guests:'+storedId);
     if(guest && !guest.banned){
       me = guest;
-      saveSession(me.id);
       history.replaceState(null, '', location.pathname);
       await logConnection(me.id, 'reconnexion');
       showApp();
@@ -712,7 +759,9 @@ async function isIpBanned(ip){
       return;
     }
   }
+
   showScreen('gate');
+  await renderReconnectCard();
 })();
 
 function startCountdown(){
@@ -735,7 +784,6 @@ function startCountdown(){
 function showScreen(name){
   $('screen-gate').classList.toggle('hidden', name!=='gate');
   $('screen-register').classList.toggle('hidden', name!=='register');
-  $('screen-login').classList.toggle('hidden', name!=='login');
   $('screen-banned').classList.toggle('hidden', name!=='banned');
   $('screen-app').classList.toggle('active', name==='app');
 }
@@ -772,11 +820,6 @@ $('gate-submit').addEventListener('click', async ()=>{
 $('open-admin').addEventListener('click', ()=>{
   $('admin-login').classList.add('active');
 });
-$('open-login').addEventListener('click', ()=>{
-  $('login-err').textContent = '';
-  showScreen('login');
-});
-$('login-back').addEventListener('click', ()=> showScreen('gate'));
 $('admin-cancel').addEventListener('click', ()=> $('admin-login').classList.remove('active'));
 $('admin-pass-submit').addEventListener('click', ()=>{
   if($('admin-pass').value === ADMIN_PASSWORD){
@@ -839,38 +882,6 @@ $('reg-submit').addEventListener('click', async ()=>{
 
   await logConnection(id, 'connexion');
   saveSession(id);
-  history.replaceState(null, '', location.pathname);
-  showApp();
-});
-
-let loginSubmitting = false;
-$('login-submit').addEventListener('click', async ()=>{
-  if(loginSubmitting) return;
-  const first = $('login-first').value.trim();
-  const last = $('login-last').value.trim();
-  const phone = $('login-phone').value.trim();
-  $('login-err').textContent = '';
-  if(!first || !phone){ $('login-err').textContent = 'Prénom et numéro sont requis.'; return; }
-
-  loginSubmitting = true;
-  $('login-submit').disabled = true;
-  $('login-submit').textContent = 'Recherche…';
-
-  const found = await findGuestByIdentity(first, last, phone);
-
-  loginSubmitting = false;
-  $('login-submit').disabled = false;
-  $('login-submit').textContent = 'Me reconnecter';
-
-  if(!found){
-    $('login-err').textContent = "Aucun compte ne correspond à ces informations.";
-    return;
-  }
-  if(found.banned){ showScreen('banned'); return; }
-
-  me = found;
-  saveSession(me.id);
-  await logConnection(me.id, 'reconnexion');
   history.replaceState(null, '', location.pathname);
   showApp();
 });
