@@ -405,6 +405,19 @@
     <section id="tab-admin" class="hidden">
       <div class="section-title"><h2>Espace organisateur</h2></div>
       <div class="card">
+        <div style="font-weight:600; margin-bottom:10px;">Date et heure de la soirée</div>
+        <div class="field">
+          <label>Libellé affiché aux invités</label>
+          <input id="admin-event-label" type="text" placeholder="Samedi 12 septembre">
+        </div>
+        <div class="field">
+          <label>Date et heure exactes (pour le compte à rebours)</label>
+          <input id="admin-event-date" type="datetime-local">
+        </div>
+        <button class="btn gold small" id="save-event-btn">Enregistrer</button>
+        <div class="err" id="event-err"></div>
+      </div>
+      <div class="card">
         <div style="font-weight:600; margin-bottom:10px;">Générer un code d'accès</div>
         <div class="field">
           <label>Nombre d'utilisations (laisser vide = illimité)</label>
@@ -487,8 +500,8 @@
    CONFIG — à personnaliser avant de partager le site
    ========================================================= */
 const ADMIN_PASSWORD = "Luc70Fete"; // change ce mot de passe avant de le partager
-const EVENT_LABEL = "Samedi 12 septembre";
-const EVENT_DATE = new Date('2026-09-12T18:00:00'); // à ajuster à la vraie date/heure de la soirée
+let EVENT_LABEL = "Samedi 12 septembre";
+let EVENT_DATE = new Date('2026-09-12T18:00:00'); // valeur par défaut, modifiable depuis l'espace organisateur
 
 /* =========================================================
    FIREBASE — vraie base de données gratuite (Firestore).
@@ -735,7 +748,18 @@ $('reconnect-btn').addEventListener('click', async ()=>{
   showApp();
 });
 
+async function loadEventSettings(){
+  try{
+    const s = await sGet('settings:event');
+    if(s){
+      if(s.label) EVENT_LABEL = s.label;
+      if(s.date) EVENT_DATE = new Date(s.date);
+    }
+  }catch(e){ console.error('loadEventSettings failed', e); }
+}
+
 (async function init(){
+  await loadEventSettings();
   startCountdown();
   const params = new URLSearchParams(location.search);
   const prefillCode = params.get('code');
@@ -1164,7 +1188,36 @@ $('gen-code-btn').addEventListener('click', async ()=>{
   loadAdmin();
 });
 
+function toDatetimeLocalValue(d){
+  const pad = n => String(n).padStart(2,'0');
+  return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+let eventSubmitting = false;
+$('save-event-btn').addEventListener('click', async ()=>{
+  if(eventSubmitting) return;
+  const label = $('admin-event-label').value.trim();
+  const dateRaw = $('admin-event-date').value;
+  $('event-err').textContent = '';
+  if(!label || !dateRaw){ $('event-err').textContent = 'Remplis le libellé et la date.'; return; }
+  const newDate = new Date(dateRaw);
+  if(isNaN(newDate.getTime())){ $('event-err').textContent = 'Date invalide.'; return; }
+
+  eventSubmitting = true;
+  $('save-event-btn').disabled = true;
+  await sSet('settings:event', { label, date: newDate.toISOString() });
+  EVENT_LABEL = label;
+  EVENT_DATE = newDate;
+  if(me) $('topbar-sub').textContent = EVENT_LABEL;
+  eventSubmitting = false;
+  $('save-event-btn').disabled = false;
+  toast('Date de la soirée mise à jour.');
+});
+
 async function loadAdmin(){
+  $('admin-event-label').value = EVENT_LABEL;
+  $('admin-event-date').value = toDatetimeLocalValue(EVENT_DATE);
+
   const codeIds = (await sGet('idx:codes')) || [];
   const el = $('codes-list');
   if(!codeIds.length){ el.innerHTML = 'Aucun code généré pour l\'instant.'; }
